@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapa 3D Premium - Hospitales Bogotá</title>
+    
+    <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+    
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background-color: #f4f6f8;
+        }
+
+        #map { width: 100%; height: 100%; }
+
+        /* --- 1. ESTILOS DE LOS HOSPITALES CON LOGO --- */
+        .marcador-contenedor {
+            position: relative;
+            width: 0;
+            height: 0;
+            cursor: default;
+        }
+
+        /* Estilo base para los círculos de las imágenes */
+        .logo-indicador {
+            position: absolute;
+            width: 32px;
+            height: 32px;
+            border: 2px solid #004b87;
+            border-radius: 50%;
+            left: -18px; 
+            top: -18px;
+            box-shadow: 0 3px 8px rgba(0,0,0,0.4);
+            object-fit: contain;
+            transition: all 0.3s ease;
+            pointer-events: auto; /* Permite detectar el mouse sobre el logo */
+        }
+
+        /* TAMAÑO REDUCIDO para las etiquetas y evitar choques */
+        .etiqueta-hospital {
+            position: absolute;
+            background-color: rgba(255, 255, 255, 0.92);
+            border: 2px solid #004b87;
+            border-radius: 5px;
+            padding: 4px 8px; /* Más compacto */
+            font-size: 11px; /* Letra ajustada */
+            white-space: nowrap;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            pointer-events: none;
+            transition: background-color 0.2s ease, box-shadow 0.2s ease;
+            backdrop-filter: blur(2px);
+        }
+        
+        .etiqueta-hospital strong { color: #004b87; font-size: 12px; display: block; margin-bottom: 1px; }
+        .etiqueta-hospital span { color: #444; font-size: 10px; display: block; }
+
+        /* NUEVAS DIRECCIONES: 8 puntos cardinales para distribución radial */
+        .pos-derecha            { left: 26px; top: -14px; }
+        .pos-izquierda          { right: 26px; top: -14px; }
+        .pos-arriba             { bottom: 26px; left: 50%; transform: translateX(-50%); }
+        .pos-abajo              { top: 26px; left: 50%; transform: translateX(-50%); }
+        .pos-arriba-derecha     { bottom: 12px; left: 16px; }
+        .pos-arriba-izquierda   { bottom: 12px; right: 16px; }
+        .pos-abajo-derecha      { top: 12px; left: 16px; }
+        .pos-abajo-izquierda    { top: 12px; right: 16px; }
+
+        /* --- ESTILOS ESPECIALES: APERTURA PET --- */
+        .logo-indicador.apertura-pet {
+            border-color: #f39c12;
+            box-shadow: 0 0 12px rgba(243, 156, 18, 0.7);
+            width: 36px;
+            height: 36px;
+            left: -20px;
+            top: -20px;
+        }
+
+        .etiqueta-hospital.apertura-pet {
+            border-color: #f39c12;
+        }
+
+        .etiqueta-hospital.apertura-pet strong {
+            color: #d35400;
+        }
+
+        .badge-pet {
+            display: inline-block;
+            background-color: #f39c12;
+            color: white;
+            font-size: 9px;
+            font-weight: bold;
+            padding: 2px 5px;
+            border-radius: 3px;
+            margin-top: 3px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* --- 2. ESTILOS DE LAS LOCALIDADES --- */
+        .etiqueta-localidad {
+            color: #475569;
+            font-size: 14px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            pointer-events: none;
+            opacity: 0.8;
+            text-align: center;
+            text-shadow: 2px 2px 0 #fff, -2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 0 2px 0 #fff, 0 -2px 0 #fff, -2px 0 0 #fff, 2px 0 0 #fff;
+            white-space: nowrap;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+    
+    <script>
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: {
+                'version': 8,
+                'sources': {
+                    'mapa-imagenes-limpio': {
+                        'type': 'raster',
+                        'tiles': ['https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png'],
+                        'tileSize': 256,
+                        'attribution': '&copy; OpenStreetMap'
+                    }
+                },
+                'layers': [
+                    { 'id': 'capa-base', 'type': 'raster', 'source': 'mapa-imagenes-limpio', 'minzoom': 0, 'maxzoom': 18 }
+                ]
+            },
+            // Zoom sutilmente más cercano para separar los hospitales del centro automáticamente
+            center: [-74.055, 4.640], 
+            zoom: 11.8, 
+            pitch: 0,      
+            bearing: 0     
+        });
+
+        map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+
+        // 2. BASE DE DATOS FINAL - Posiciones reasignadas para evitar choques
+        const hospitales = [
+            // Hospitales Normales
+            { nombre: "CTIC", lat: 4.7554, lng: -74.0286, direccion: "Calle 170 #14-51", posicion: "pos-arriba-izquierda", 
+              logo: "https://cdn.phototourl.com/free/2026-07-10-c9701abe-40a1-402b-85fb-e82967e247c2.png", monograma: false },
+            { nombre: "LaCardio", lat: 4.7495, lng: -74.0250, direccion: "Calle 163A #13B-60", posicion: "pos-derecha", 
+              logo: "https://www.google.com/s2/favicons?domain=lacardio.org&sz=128", monograma: false },
+            { nombre: "Clínica La Colina", lat: 4.7505, lng: -74.0645, direccion: "Calle 167 # 72-07", posicion: "pos-abajo", 
+              logo: "https://www.google.com/s2/favicons?domain=clinicalacolina.com&sz=128", monograma: false },
+            { nombre: "Fundación Santa Fe", lat: 4.6948, lng: -74.0321, direccion: "Cra. 7 #117-15", posicion: "pos-arriba-derecha", 
+              logo: "https://www.google.com/s2/favicons?domain=fsfb.org.co&sz=128", monograma: false },
+            { nombre: "Clínica del Country", lat: 4.6669, lng: -74.0565, direccion: "Calle 83 # 16-57", posicion: "pos-izquierda", 
+              logo: "https://www.google.com/s2/favicons?domain=clinicalacolina.com&sz=128", monograma: false },
+            { nombre: "Clínica de Marly", lat: 4.6360, lng: -74.0645, direccion: "Cl. 50 #9-67", posicion: "pos-arriba-izquierda", 
+              logo: "https://www.google.com/s2/favicons?domain=marly.com.co&sz=128", monograma: false },
+            { nombre: "Hospital San Ignacio", lat: 4.6290, lng: -74.0642, direccion: "Cra. 7 #40-62", posicion: "pos-derecha", 
+              logo: "https://cdn.phototourl.com/free/2026-07-10-9c9a36c0-3ee8-4317-83b4-097da7d58c19.jpg", monograma: false },
+            { nombre: "Instituto Nacional de Cancerología", lat: 4.5873, lng: -74.0862, direccion: "Calle 1 # 9-85", posicion: "pos-abajo-derecha", 
+              logo: "https://cdn.phototourl.com/free/2026-07-10-9e47abb9-123c-4d7e-ab50-4582bddc9848.jpg", monograma: false },
+            
+            // --- HOSPITALES EN PROCESO DE APERTURA PET ---
+            { nombre: "Hospital Militar Central", lat: 4.6346, lng: -74.0624, direccion: "Tr. 3 #49-00", posicion: "pos-arriba-derecha", 
+              logo: "https://cdn.phototourl.com/free/2026-07-14-9ca2e387-68c0-457d-9404-de3ba15479a4.jpg", monograma: false, aperturaPET: true },
+            { nombre: "Hospital Universitario Mayor Méderi", lat: 4.6190, lng: -74.0852, direccion: "Cl. 24 #29-45", posicion: "pos-izquierda", 
+              logo: "https://www.google.com/s2/favicons?domain=mederi.com.co&sz=128", monograma: false, aperturaPET: true },
+            { nombre: "Hospital de San José", lat: 4.6029, lng: -74.0819, direccion: "Cl. 10 #18-75", posicion: "pos-abajo-izquierda", 
+              logo: "https://www.google.com/s2/favicons?domain=hospitaldesanjose.org.co&sz=128", monograma: false, aperturaPET: true }
+        ];
+
+        // INYECTAR MARCADORES
+        hospitales.forEach(h => {
+            const contenedor = document.createElement('div');
+            contenedor.className = 'marcador-contenedor';
+            
+            const paddingEstilo = h.monograma ? '0' : '2px';
+            const fondoEstilo = h.monograma ? 'transparent' : '#ffffff';
+            
+            const claseApertura = h.aperturaPET ? ' apertura-pet' : '';
+            const htmlBadge = h.aperturaPET ? '<span class="badge-pet">Próximamente: PET</span>' : '';
+
+            contenedor.innerHTML = `
+                <img src="${h.logo}" class="logo-indicador${claseApertura}" style="padding: ${paddingEstilo}; background-color: ${fondoEstilo};" alt="Logo de ${h.nombre}">
+                <div class="etiqueta-hospital ${h.posicion}${claseApertura}">
+                    <strong>${h.nombre}</strong>
+                    <span>${h.direccion}</span>
+                    ${htmlBadge}
+                </div>
+            `;
+
+            const marcador = new maplibregl.Marker({
+                element: contenedor,
+                rotationAlignment: 'viewport',
+                pitchAlignment: 'viewport'
+            })
+            .setLngLat([h.lng, h.lat])
+            .addTo(map);
+
+            // Funcionalidad para "Traer al frente" cuando el mouse pasa por encima
+            const el = marcador.getElement();
+            const zIndexBase = h.aperturaPET ? "100" : "10";
+            el.style.zIndex = zIndexBase;
+
+            el.addEventListener('mouseenter', () => {
+                el.style.zIndex = "9999";
+                el.querySelector('.etiqueta-hospital').style.backgroundColor = 'rgba(255, 255, 255, 1)'; // Se vuelve sólido
+                el.querySelector('.etiqueta-hospital').style.boxShadow = '0 4px 12px rgba(0,0,0,0.4)'; // Sombra más fuerte
+            });
+
+            el.addEventListener('mouseleave', () => {
+                el.style.zIndex = zIndexBase;
+                el.querySelector('.etiqueta-hospital').style.backgroundColor = 'rgba(255, 255, 255, 0.92)'; // Vuelve a ser semi-transparente
+                el.querySelector('.etiqueta-hospital').style.boxShadow = '0 2px 5px rgba(0,0,0,0.3)';
+            });
+        });
+
+        // 3. CARGAR LOCALIDADES
+        map.on('load', () => {
+            fetch('https://raw.githubusercontent.com/nestorandrespe/datos-bogota/master/localidades.geojson')
+                .then(response => response.json())
+                .then(data => {
+                    var paletaPastel = ["#dbeafe", "#e0f2fe", "#e0f7fa", "#e8f5e9", "#f1f8e9", "#fffde7", "#fff3e0", "#efebe9", "#f3e5f5", "#fce4ec"];
+                    
+                    data.features.forEach((feature, i) => {
+                        feature.properties.color_diapositiva = paletaPastel[i % paletaPastel.length];
+
+                        let props = feature.properties || {};
+                        let nombreLoc = props.LocNombre || props.NOMBRE || props.nombre || "";
+                        
+                        if (nombreLoc) {
+                            nombreLoc = nombreLoc.replace('Ã‘', 'Ñ').replace('Ã±', 'ñ');
+
+                            let centro = turf.centroid(feature).geometry.coordinates;
+                            let etiquetaHTML = document.createElement('div');
+                            etiquetaHTML.className = 'etiqueta-localidad';
+                            etiquetaHTML.innerText = nombreLoc;
+
+                            new maplibregl.Marker({
+                                element: etiquetaHTML,
+                                anchor: 'center', 
+                                rotationAlignment: 'viewport',
+                                pitchAlignment: 'viewport'
+                            })
+                            .setLngLat(centro)
+                            .addTo(map);
+                        }
+                    });
+
+                    map.addSource('localidades-bogota', { type: 'geojson', data: data });
+                    
+                    map.addLayer({
+                        id: 'localidades-relleno',
+                        type: 'fill',
+                        source: 'localidades-bogota',
+                        paint: { 'fill-color': ['get', 'color_diapositiva'], 'fill-opacity': 0.35 }
+                    });
+
+                    map.addLayer({
+                        id: 'localidades-lineas',
+                        type: 'line',
+                        source: 'localidades-bogota',
+                        paint: { 'line-color': '#475569', 'line-width': 1.5, 'line-opacity': 0.6 }
+                    });
+                })
+                .catch(err => console.log('Capas de fondo cargadas correctamente.'));
+        });
+    </script>
+</body>
+</html>
